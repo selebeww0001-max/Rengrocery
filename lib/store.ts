@@ -79,6 +79,9 @@ interface StoreState {
 const MODERATOR_PASSWORD = '852013'
 const STORE_KEY = 'ren-grocery-store'
 
+// Flag untuk mencegah loop: tab ini sendiri yang nulis, jangan proses balik
+let isWriting = false
+
 export const useStore = create<StoreState>()(
   persist(
     (set) => ({
@@ -132,12 +135,17 @@ export const useStore = create<StoreState>()(
         return {
           getItem: (name) => localStorage.getItem(name),
           setItem: (name, value) => {
+            // Set flag dulu sebelum nulis
+            isWriting = true
             localStorage.setItem(name, value)
+            // Broadcast ke tab LAIN (bukan diri sendiri)
             try {
               const channel = new BroadcastChannel('ren-grocery-sync')
               channel.postMessage({ key: name, value })
               channel.close()
             } catch {}
+            // Reset flag setelah microtask selesai
+            Promise.resolve().then(() => { isWriting = false })
           },
           removeItem: (name) => localStorage.removeItem(name),
         }
@@ -146,18 +154,20 @@ export const useStore = create<StoreState>()(
   )
 )
 
-// Sync real-time antar tab
+// Sync real-time antar tab — hanya proses kalau bukan tab ini yang nulis
 if (typeof window !== 'undefined') {
-  // BroadcastChannel: lebih cepat, same origin semua tab
   try {
     const channel = new BroadcastChannel('ren-grocery-sync')
     channel.addEventListener('message', (event) => {
+      // Abaikan kalau tab ini sendiri yang kirim
+      if (isWriting) return
       if (event.data?.key === STORE_KEY) {
         try {
           const parsed = JSON.parse(event.data.value)
           if (parsed?.state) {
             useStore.setState((current) => ({
               ...parsed.state,
+              // Jangan overwrite status login moderator di tab lain
               isModeratorMode: current.isModeratorMode,
             }))
           }
@@ -166,7 +176,7 @@ if (typeof window !== 'undefined') {
     })
   } catch {}
 
-  // Fallback: storage event untuk browser lama
+  // Fallback storage event (antar tab berbeda, tidak trigger di tab yang sama)
   window.addEventListener('storage', (event) => {
     if (event.key === STORE_KEY && event.newValue) {
       try {
